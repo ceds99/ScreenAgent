@@ -1,0 +1,32 @@
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.ipynb_checkpoints/
+
+# Env
+.env
+venv/
+.venv/
+
+# Large / generated artifacts — downloaded or produced on the server, not versioned
+checkpoints/*
+!checkpoints/.gitkeep
+datasets/*
+!datasets/.gitkeep
+logs/*
+!logs/.gitkeep
+
+# Common weight/data file types, in case they land outside the dirs above
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.ckpt

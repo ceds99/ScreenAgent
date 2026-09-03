@@ -1,0 +1,82 @@
+# ScreenAgent 项目依赖
+#
+# 重要说明：
+# 1. PyTorch 需要单独安装（见下方注释），不要通过 pip install -r 安装
+# 2. 以下版本经过兼容性测试，请勿随意更改版本号
+# 3. 安装顺序：先装 PyTorch，再装本文件的依赖
+
+# ============================================================
+# PyTorch（单独安装，不要取消注释）
+# pip install torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 --index-url https://download.pytorch.org/whl/cu118
+# ============================================================
+
+# ========== 核心框架 ==========
+# transformers 4.49.0 支持 Qwen2.5-VL 模型
+transformers==4.49.0
+
+# accelerate 用于分布式训练，需要和 transformers 版本匹配
+accelerate==0.30.1
+
+# deepspeed 用于高效训练，0.13.1 与 PyTorch 2.1.x 兼容
+deepspeed==0.13.1
+
+# peft 用于 LoRA 微调，0.14.0 与 transformers 4.49.0 兼容
+peft==0.14.0
+
+# bitsandbytes 用于量化，0.43.1 与 CUDA 11.8 兼容
+bitsandbytes==0.43.1
+
+# ========== HuggingFace 生态 ==========
+# datasets 用于加载数据集
+datasets>=2.18.0
+
+# huggingface-hub 版本需要 >= 0.21.0（transformers 4.49.0 要求）
+huggingface-hub>=0.21.0
+
+# tokenizers 版本需要 >= 0.19.0（transformers 4.49.0 要求）
+tokenizers>=0.19.0
+
+# ========== Qwen-VL 相关 ==========
+# Qwen-VL 模型的图像处理工具
+qwen-vl-utils
+
+# ========== 数据处理 ==========
+# numpy 必须 < 2.0，否则和部分库不兼容
+numpy<2.0
+
+# 图像处理
+pillow>=10.0.0
+opencv-python>=4.8.0
+
+# 科学计算
+scikit-image>=0.21.0
+scikit-learn>=1.3.0
+
+# ========== 训练监控 ==========
+# wandb 用于实验跟踪
+wandb>=0.15.0
+
+# tensorboard 用于可视化
+tensorboard>=2.14.0
+
+# ========== 工具库 ==========
+# 进度条
+tqdm>=4.66.0
+
+# 绘图
+matplotlib>=3.7.0
+
+# 字符串相似度（评估用）
+Levenshtein>=0.21.0
+
+# COCO 格式评估
+pycocotools>=2.0.7
+
+# 编译加速
+ninja>=1.11.0
+
+# Jupyter 支持
+jupyterlab>=4.0.0
+
+# 自然语言处理
+nltk>=3.8.0
