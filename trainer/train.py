@@ -21,7 +21,7 @@ import deepspeed
 import wandb
 from torch.utils.tensorboard import SummaryWriter
 from peft import LoraConfig, get_peft_model
-from transformers import AutoProcessor, BitsAndBytesConfig
+from transformers import AutoProcessor
 
 # 添加项目根目录到 path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -29,6 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data import HybridDataset, collate_fn
 from models import find_lora_target_modules
 from utils import save_args_to_json, ensure_dir, get_timestamp
+from utils.qwen_vl_common import CHAT_TEMPLATE
 from trainer.trainer import train_one_epoch
 from trainer.evaluator import evaluate_screenspot, evaluate_training_data
 
@@ -138,7 +139,9 @@ def main():
     args.distributed = args.world_size > 1
 
     # 设置 attention 实现
-    if args.attn_imple in ["eager", "sdpa"]:
+    # 只在 eager 模式下关闭加速后端；sdpa 模式选它就是为了让它自动挑选加速路径，
+    # 把这两个开关也关掉会让 sdpa 退化成最慢的实现，自相矛盾
+    if args.attn_imple == "eager":
         torch.backends.cuda.enable_mem_efficient_sdp(False)
         torch.backends.cuda.enable_flash_sdp(False)
 
@@ -205,8 +208,7 @@ def main():
     )
     processor.tokenizer.model_max_length = args.model_max_length
 
-    # 设置 chat template（Qwen2.5-VL 格式）
-    CHAT_TEMPLATE = "{% set image_count = namespace(value=0) %}{% set video_count = namespace(value=0) %}{% for message in messages %}<|im_start|>{{ message['role'] }}\n{% if message['content'] is string %}{{ message['content'] }}<|im_end|>\n{% else %}{% for content in message['content'] %}{% if content['type'] == 'image' or 'image' in content or 'image_url' in content %}{% set image_count.value = image_count.value + 1 %}{% if add_vision_id %}Picture {{ image_count.value }}: {% endif %}<|vision_start|><|image_pad|><|vision_end|>{% elif content['type'] == 'video' or 'video' in content %}{% set video_count.value = video_count.value + 1 %}{% if add_vision_id %}Video {{ video_count.value }}: {% endif %}<|vision_start|><|video_pad|><|vision_end|>{% elif 'text' in content %}{{ content['text'] }}{% endif %}{% endfor %}<|im_end|>\n{% endif %}{% endfor %}{% if add_generation_prompt %}<|im_start|>assistant\n{% endif %}"
+    # 设置 chat template（Qwen2.5-VL 格式，和 inference.py 共用同一份定义）
     processor.chat_template = CHAT_TEMPLATE
     if hasattr(processor, 'tokenizer'):
         processor.tokenizer.chat_template = CHAT_TEMPLATE
@@ -232,7 +234,7 @@ def main():
     elif args.lora_r > 0:
         print(f"\n[2/4] 配置 LoRA (r={args.lora_r}, alpha={args.lora_alpha})...")
 
-        # 找到要训练的模块
+        # 找到要训练的模块（lm_head 始终不参与 LoRA，见 find_lora_target_modules 的默认排除逻辑）
         exclude_modules = ["visual"] if not args.tune_visual_encoder else []
         target_modules = find_lora_target_modules(model, exclude_keywords=exclude_modules)
 

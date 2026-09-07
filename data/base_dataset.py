@@ -55,15 +55,19 @@ def collate_fn(batch, processor=None):
     input_ids = input_ids[:, :max_len]
     labels = labels[:, :max_len]
 
+    # 重新生成 attention_mask：add_answer_to_batch/add_multiturn_answer 拼接答案后
+    # 删除了原有的 attention_mask（长度和拼接后的 input_ids 对不上），这里基于
+    # padding 后的 input_ids 重新生成，padding 位置标记为 0
+    attention_mask = (input_ids != pad_token_id).long()
+
     # 处理图像数据
-    # Qwen2.5-VL 的 pixel_values 是 2D tensor [num_patches, hidden_dim]
+    # Qwen2.5-VL 的 pixel_values 本身就是按 patch 拼接的 2D tensor [num_patches, hidden_dim]，
+    # 不带独立的 batch 维；统一用 cat 拼接多个样本的 patch，配合 image_grid_thw
+    # 供模型区分各张图各自的 patch 范围。batch_size=1 时行为不变，
+    # batch_size>1 且样本分辨率不同也能正确拼接（不会像 stack 那样因形状不一致而报错）。
     if data_list[0]['pixel_values'] is not None:
         pixel_values = [item['pixel_values'] for item in data_list]
-        # 检查是不是 2D tensor，如果是就用 stack
-        if len(pixel_values[0].shape) == 2:
-            pixel_values = torch.stack(pixel_values, dim=0)
-        else:
-            pixel_values = torch.cat(pixel_values, dim=0)
+        pixel_values = torch.cat(pixel_values, dim=0)
         image_sizes = [item['image_sizes'] for item in data_list]
         image_sizes = torch.cat(image_sizes, dim=0)
     else:
@@ -72,6 +76,7 @@ def collate_fn(batch, processor=None):
 
     result = {
         'input_ids': input_ids,
+        'attention_mask': attention_mask,
         'labels': labels,
         'pixel_values': pixel_values,
         'image_sizes': image_sizes,
@@ -172,6 +177,15 @@ class HybridDataset(Dataset):
         # 采样记录（用于轮询采样）
         self.sample_records = [set() for _ in self.datasets]
         self.current_dataset_idx = 0
+
+        # 轮询采样模式下，train_ratio/val_ratio 设置的比例不会生效
+        # （各数据集会被严格均匀轮询访问），如果用户配置了非均匀比例，提示一下
+        if (not inference and self.random_sample and self.record_sample
+                and not np.allclose(self.sample_rates, self.sample_rates[0])):
+            print(
+                "[警告] record_sample=True（轮询采样模式）时，"
+                "train_ratio 设置的采样比例不会生效，各数据集将被均匀轮询访问"
+            )
 
         # 打印信息
         mode = "评估" if inference else "训练"

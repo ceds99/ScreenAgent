@@ -77,6 +77,7 @@ def train_one_epoch(train_loader, model, epoch, scheduler, writer, train_iter, a
             forward_dict = {
                 "pixel_values": input_dict["pixel_values"],
                 "input_ids": input_dict["input_ids"],
+                "attention_mask": input_dict["attention_mask"],
                 "labels": input_dict["labels"],
                 "output_hidden_states": True,
             }

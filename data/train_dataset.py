@@ -10,7 +10,6 @@
 
 import os
 import json
-import math
 import random
 import numpy as np
 from PIL import Image
@@ -19,6 +18,7 @@ import torch
 from torch.utils.data import Dataset
 
 from .template import build_grounding_prompt, add_answer_to_batch, add_multiturn_answer
+from utils.qwen_vl_common import smart_resize, point_to_qwen_coords
 
 
 # 数据集目录名映射（数据集参数名 -> 实际目录名）
@@ -127,6 +127,10 @@ class GroundingTrainDataset(Dataset):
             image_list = None
 
         # 随机选择任务类型（text2point, text2bbox, point2text, bbox2text）
+        # 注意：这里刻意不绑定 idx 相关的随机种子——只有单轮模式下的元素选择
+        # （下面 random.seed(idx) 那一支）需要强可复现性，方便调试时对照同一个
+        # idx 反复检查同一条样本；任务类型选择和多轮模式的元素选择允许在
+        # 同一个 idx 被重复访问时产出不同内容，增加数据多样性，是有意为之，不是遗漏。
         task_type = np.random.choice(len(self.sample_prob), p=self.sample_prob)
 
         # 选择要定位的元素（支持多轮）
@@ -140,7 +144,7 @@ class GroundingTrainDataset(Dataset):
             element_idx = random.randint(0, len(elements) - 1)
             selected_elements = [elements[element_idx]]
         else:
-            # 多轮：随机选择多个元素
+            # 多轮：随机选择多个元素（有意不绑定种子，见上面的说明）
             selected_elements = random.choices(elements, k=num_elements)
 
         # 构建训练数据
@@ -160,18 +164,25 @@ class GroundingTrainDataset(Dataset):
         element_name = element['instruction']
 
         # 获取答案坐标
-        # 注意：单轮对话时，原始项目用的是归一化坐标（保持和评估时的输入格式一致）
-        # 坐标转换 convert_point_for_qwen 只是用于更新 element 对象，实际答案不变
+        # point 任务的坐标系统必须和 evaluator.py / inference.py 保持一致：
+        # 对 Qwen2.5-VL，统一使用 resize 后的绝对像素坐标（而不是归一化坐标），
+        # 与 _build_multi_turn 的处理方式相同，避免同一次训练里单轮/多轮样本
+        # 各自产出不同坐标系统的标签。
         if task_type in [0, 2]:  # point 任务
-            answer_xy = element['point']
+            if 'Qwen2.5-VL' in self.model_id:
+                answer_xy = self._convert_point_for_qwen(
+                    element['point'], item['img_size'][1], item['img_size'][0]
+                )
+            elif self.xy_int:
+                answer_xy = [int(x * 1000) for x in element['point']]
+            else:
+                answer_xy = [round(x, 2) for x in element['point']]
         else:  # bbox 任务
             answer_xy = element['bbox']
-
-        # 格式化坐标
-        if self.xy_int:
-            answer_xy = [int(x * 1000) for x in answer_xy]
-        else:
-            answer_xy = [round(x, 2) for x in answer_xy]
+            if self.xy_int:
+                answer_xy = [int(x * 1000) for x in answer_xy]
+            else:
+                answer_xy = [round(x, 2) for x in answer_xy]
 
         # point2text / bbox2text 任务需要交换输入输出
         if task_type in [2, 3]:
@@ -266,53 +277,17 @@ class GroundingTrainDataset(Dataset):
 
     def _convert_point_for_qwen(self, point, orig_height, orig_width):
         """
-        把归一化坐标转换成 Qwen2.5-VL 的绝对坐标格式
-
-        Qwen2.5-VL 会对图片做 resize，所以坐标也要相应转换
+        把归一化坐标转换成 Qwen2.5-VL 的绝对坐标格式（委托给共享实现，
+        和 evaluator.py / inference.py 保持完全一致，见 utils/qwen_vl_common.py）
         """
-        # 计算 resize 后的尺寸
-        new_height, new_width = self._smart_resize(
-            orig_height, orig_width,
-            factor=28,
-            min_pixels=self.min_pixels,
-            max_pixels=self.max_pixels
+        return point_to_qwen_coords(
+            point, orig_height, orig_width,
+            factor=28, min_pixels=self.min_pixels, max_pixels=self.max_pixels
         )
 
-        # 转换坐标
-        scale_w = new_width / orig_width
-        scale_h = new_height / orig_height
-        x, y = point
-        x_new = round(x * orig_width * scale_w)
-        y_new = round(y * orig_height * scale_h)
-
-        # 确保在范围内
-        x_new = max(0, min(x_new, new_width - 1))
-        y_new = max(0, min(y_new, new_height - 1))
-
-        return [x_new, y_new]
-
     def _smart_resize(self, height, width, factor=28, min_pixels=256*28*28, max_pixels=1280*28*28):
-        """
-        智能 resize，保持长宽都是 factor 的倍数，同时控制总像素数
-        """
-        if height < factor or width < factor:
-            raise ValueError(f"图片太小: {height}x{width}")
-        if max(height, width) / min(height, width) > 200:
-            raise ValueError(f"长宽比太极端: {height}x{width}")
-
-        h_bar = round(height / factor) * factor
-        w_bar = round(width / factor) * factor
-
-        if h_bar * w_bar > max_pixels:
-            beta = math.sqrt((height * width) / max_pixels)
-            h_bar = math.floor(height / beta / factor) * factor
-            w_bar = math.floor(width / beta / factor) * factor
-        elif h_bar * w_bar < min_pixels:
-            beta = math.sqrt(min_pixels / (height * width))
-            h_bar = math.ceil(height * beta / factor) * factor
-            w_bar = math.ceil(width * beta / factor) * factor
-
-        return h_bar, w_bar
+        """智能 resize（委托给共享实现），保持长宽都是 factor 的倍数，同时控制总像素数"""
+        return smart_resize(height, width, factor, min_pixels, max_pixels)
 
     def _random_crop(self, image, metadata, scale_range=(0.5, 1.0)):
         """

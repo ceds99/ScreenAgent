@@ -5,9 +5,7 @@
 """
 
 import os
-import re
 import ast
-import math
 import json
 import random
 import logging
@@ -20,70 +18,13 @@ import torch.distributed as dist
 from accelerate.utils import gather_object
 
 from data import dict_to_cuda
+from utils.qwen_vl_common import (
+    smart_resize,
+    qwen_coords_to_point as convert_point_from_qwen_format,
+    extract_coordinates,
+)
 
 logging.basicConfig(level=logging.INFO)
-
-
-def smart_resize(height, width, factor=28, min_pixels=256*28*28, max_pixels=1280*28*28):
-    """
-    Qwen2.5-VL 的图像 resize 逻辑
-
-    保持长宽都是 factor 的倍数，同时控制总像素数
-    """
-    if height < factor or width < factor:
-        raise ValueError(f"图片太小: {height}x{width}")
-    if max(height, width) / min(height, width) > 200:
-        raise ValueError(f"长宽比太极端: {height}x{width}")
-
-    h_bar = round(height / factor) * factor
-    w_bar = round(width / factor) * factor
-
-    if h_bar * w_bar > max_pixels:
-        beta = math.sqrt((height * width) / max_pixels)
-        h_bar = math.floor(height / beta / factor) * factor
-        w_bar = math.floor(width / beta / factor) * factor
-    elif h_bar * w_bar < min_pixels:
-        beta = math.sqrt(min_pixels / (height * width))
-        h_bar = math.ceil(height * beta / factor) * factor
-        w_bar = math.ceil(width * beta / factor) * factor
-
-    return h_bar, w_bar
-
-
-def convert_point_from_qwen_format(point, orig_height, orig_width,
-                                   min_pixels=256*28*28, max_pixels=1280*28*28):
-    """
-    把 Qwen2.5-VL 输出的坐标转换回原图坐标
-
-    模型输出的是 resize 后的绝对坐标，需要转回原图的绝对坐标
-    """
-    new_height, new_width = smart_resize(orig_height, orig_width, 28, min_pixels, max_pixels)
-
-    scale_w = orig_width / new_width
-    scale_h = orig_height / new_height
-
-    x_resized, y_resized = point
-    x_orig = round(x_resized * scale_w)
-    y_orig = round(y_resized * scale_h)
-
-    # 确保在范围内
-    x_orig = max(0, min(x_orig, orig_width - 1))
-    y_orig = max(0, min(y_orig, orig_height - 1))
-
-    return [x_orig, y_orig]
-
-
-def extract_coordinates(text):
-    """
-    从模型输出中提取坐标
-
-    支持多种格式：[x, y]、[x,y]、(x, y) 等
-    """
-    # 尝试匹配 [x, y] 格式
-    match = re.search(r'\[\s*[\d\.]+\s*,\s*[\d\.]+\s*\]', text)
-    if match:
-        return match.group(0)
-    return None
 
 
 def point_in_bbox(point, bbox):
@@ -222,6 +163,7 @@ def evaluate_screenspot(val_loader, model, processor, epoch, global_step, writer
         generate_dict = {
             "pixel_values": input_dict["pixel_values"],
             "input_ids": input_dict["input_ids"],
+            "attention_mask": input_dict["attention_mask"],
             "image_grid_thw": input_dict["image_sizes"],
         }
 
@@ -315,12 +257,11 @@ def evaluate_screenspot(val_loader, model, processor, epoch, global_step, writer
             try:
                 pred_point = ast.literal_eval(pred)
                 step_result['pred_point'] = pred_point
-
-                if point_in_bbox(pred_point, gt_bbox):
-                    step_result["acc"] = 1
-                else:
-                    step_result["acc"] = 0
-            except:
+                step_result["acc"] = 1 if point_in_bbox(pred_point, gt_bbox) else 0
+            except (ValueError, SyntaxError, TypeError) as e:
+                logging.warning(
+                    f"预测结果解析失败 anno_id={output.get('anno_id')}: {pred!r}, error={e}"
+                )
                 step_result["acc"] = 0
 
             results[split][data_type].append(step_result)
@@ -423,6 +364,7 @@ def evaluate_training_data(val_loader, model, processor, epoch, global_step, wri
         output = model(
             pixel_values=input_dict["pixel_values"],
             input_ids=input_dict["input_ids"],
+            attention_mask=input_dict["attention_mask"],
             labels=input_dict["labels"],
             image_grid_thw=input_dict["image_sizes"],
         )

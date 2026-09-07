@@ -3,8 +3,6 @@
 
 主要包含：
 - LoRA 目标模块查找
-- 模型参数统计
-- 其他辅助函数
 """
 
 import torch
@@ -19,7 +17,9 @@ def find_lora_target_modules(model, exclude_keywords=None, num_modules=-1, verbo
 
     Args:
         model: PyTorch 模型
-        exclude_keywords: 要排除的模块名关键词列表
+        exclude_keywords: 额外要排除的模块名关键词列表（会与下面的默认排除词合并，
+            而不是互相替代——lm_head 等默认排除项始终生效，不会因为调用方传入了
+            自己的排除列表就被意外撤销）
             默认排除视觉编码器和 lm_head，因为：
             - 视觉编码器通常已经训练好了，不需要再调
             - lm_head 是输出层，一般也不需要 LoRA
@@ -29,14 +29,17 @@ def find_lora_target_modules(model, exclude_keywords=None, num_modules=-1, verbo
     Returns:
         模块名列表，可以直接传给 LoraConfig 的 target_modules 参数
     """
-    # 默认排除的模块
+    # 默认排除的模块，始终生效；调用方传入的 exclude_keywords 是在此基础上的追加项
+    default_exclude_keywords = [
+        "visual",           # 视觉编码器
+        "vision_model",     # 视觉模型
+        "img_projection",   # 图像投影层
+        "lm_head",          # 语言模型输出层
+    ]
     if exclude_keywords is None:
-        exclude_keywords = [
-            "visual",           # 视觉编码器
-            "vision_model",     # 视觉模型
-            "img_projection",   # 图像投影层
-            "lm_head",          # 语言模型输出层
-        ]
+        exclude_keywords = default_exclude_keywords
+    else:
+        exclude_keywords = list(set(default_exclude_keywords) | set(exclude_keywords))
 
     linear_cls = torch.nn.Linear
     target_modules = []
@@ -64,60 +67,3 @@ def find_lora_target_modules(model, exclude_keywords=None, num_modules=-1, verbo
             print(f"  {target_modules}")
 
     return target_modules
-
-
-def count_parameters(model, trainable_only=False):
-    """
-    统计模型参数数量
-
-    Args:
-        model: PyTorch 模型
-        trainable_only: 是否只统计可训练参数
-
-    Returns:
-        参数数量
-    """
-    if trainable_only:
-        return sum(p.numel() for p in model.parameters() if p.requires_grad)
-    else:
-        return sum(p.numel() for p in model.parameters())
-
-
-def print_trainable_parameters(model):
-    """
-    打印模型的可训练参数统计
-
-    会显示：
-    - 总参数数量
-    - 可训练参数数量
-    - 可训练参数占比
-    """
-    total_params = count_parameters(model, trainable_only=False)
-    trainable_params = count_parameters(model, trainable_only=True)
-
-    print(f"[模型参数]")
-    print(f"  总参数: {total_params:,} ({total_params / 1e9:.2f}B)")
-    print(f"  可训练: {trainable_params:,} ({trainable_params / 1e6:.2f}M)")
-    print(f"  占比: {100 * trainable_params / total_params:.2f}%")
-
-
-def freeze_module(module):
-    """
-    冻结模块的所有参数（不参与训练）
-
-    Args:
-        module: 要冻结的模块
-    """
-    for param in module.parameters():
-        param.requires_grad = False
-
-
-def unfreeze_module(module):
-    """
-    解冻模块的所有参数（参与训练）
-
-    Args:
-        module: 要解冻的模块
-    """
-    for param in module.parameters():
-        param.requires_grad = True

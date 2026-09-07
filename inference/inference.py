@@ -11,11 +11,18 @@ ScreenAgent 推理模块
 """
 
 import os
-import math
+import sys
+import ast
 from PIL import Image
 
 import torch
 from transformers import AutoProcessor, AutoModelForVision2Seq
+
+# 添加项目根目录到 path，确保直接用 `python inference/inference.py` 运行时
+# 也能 import 到项目根目录下的 utils 包（而不是只有 `inference/` 目录本身）
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from utils.qwen_vl_common import CHAT_TEMPLATE, smart_resize, qwen_coords_to_point, extract_coordinates
 
 
 class ScreenAgentInference:
@@ -57,8 +64,7 @@ class ScreenAgentInference:
             max_pixels=self.max_pixels,
         )
         
-        # 设置 chat template
-        CHAT_TEMPLATE = "{% set image_count = namespace(value=0) %}{% set video_count = namespace(value=0) %}{% for message in messages %}<|im_start|>{{ message['role'] }}\n{% if message['content'] is string %}{{ message['content'] }}<|im_end|>\n{% else %}{% for content in message['content'] %}{% if content['type'] == 'image' or 'image' in content or 'image_url' in content %}{% set image_count.value = image_count.value + 1 %}{% if add_vision_id %}Picture {{ image_count.value }}: {% endif %}<|vision_start|><|image_pad|><|vision_end|>{% elif content['type'] == 'video' or 'video' in content %}{% set video_count.value = video_count.value + 1 %}{% if add_vision_id %}Video {{ video_count.value }}: {% endif %}<|vision_start|><|video_pad|><|vision_end|>{% elif 'text' in content %}{{ content['text'] }}{% endif %}{% endfor %}<|im_end|>\n{% endif %}{% endfor %}{% if add_generation_prompt %}<|im_start|>assistant\n{% endif %}"
+        # 设置 chat template（和 train.py 共用同一份定义）
         self.processor.chat_template = CHAT_TEMPLATE
         if hasattr(self.processor, 'tokenizer'):
             self.processor.tokenizer.chat_template = CHAT_TEMPLATE
@@ -130,74 +136,49 @@ class ScreenAgentInference:
             generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=True
         )[0]
         
-        # 解析坐标
-        import ast
+        # 解析坐标（先尝试用正则从文本中提取 [x, y] 子串，兼容模型输出夹杂自然语言
+        # 修饰的情况，比如"点击位置是[512, 300]"，容错能力和 evaluator.py 保持一致）
         try:
-            pred_point = ast.literal_eval(output_text.strip())
-            
+            coord_str = extract_coordinates(output_text)
+            pred_point = ast.literal_eval(coord_str if coord_str else output_text.strip())
+
             # 如果是 bbox 格式，取中心点
             if len(pred_point) == 4:
                 pred_point = [
                     (pred_point[0] + pred_point[2]) / 2,
                     (pred_point[1] + pred_point[3]) / 2
                 ]
-            
+
             # 把模型输出的坐标转换回原图坐标
             pred_point = self._convert_point_to_original(
                 pred_point, orig_height, orig_width
             )
-            
+
             if return_normalized:
                 return pred_point[0] / orig_width, pred_point[1] / orig_height
             else:
                 return pred_point[0], pred_point[1]
-                
+
         except Exception as e:
             print(f"解析坐标失败: {e}")
             print(f"模型输出: {output_text}")
             return None, None
-    
+
     def _convert_point_to_original(self, point, orig_height, orig_width):
         """
-        把模型输出的坐标转换回原图坐标
-        
+        把模型输出的坐标转换回原图坐标（委托给共享实现，
+        和 evaluator.py 保持完全一致，见 utils/qwen_vl_common.py）
+
         模型输出的是基于 resize 后图像的绝对坐标，需要转回原图
         """
-        new_height, new_width = self._smart_resize(orig_height, orig_width)
-        
-        scale_w = orig_width / new_width
-        scale_h = orig_height / new_height
-        
-        x_resized, y_resized = point
-        x_orig = round(x_resized * scale_w)
-        y_orig = round(y_resized * scale_h)
-        
-        # 确保在范围内
-        x_orig = max(0, min(x_orig, orig_width - 1))
-        y_orig = max(0, min(y_orig, orig_height - 1))
-        
-        return [x_orig, y_orig]
-    
+        return qwen_coords_to_point(
+            point, orig_height, orig_width,
+            factor=28, min_pixels=self.min_pixels, max_pixels=self.max_pixels
+        )
+
     def _smart_resize(self, height, width, factor=28):
-        """
-        计算 Qwen2.5-VL 的 resize 后尺寸
-        """
-        min_pixels = self.min_pixels
-        max_pixels = self.max_pixels
-        
-        h_bar = round(height / factor) * factor
-        w_bar = round(width / factor) * factor
-        
-        if h_bar * w_bar > max_pixels:
-            beta = math.sqrt((height * width) / max_pixels)
-            h_bar = math.floor(height / beta / factor) * factor
-            w_bar = math.floor(width / beta / factor) * factor
-        elif h_bar * w_bar < min_pixels:
-            beta = math.sqrt(min_pixels / (height * width))
-            h_bar = math.ceil(height * beta / factor) * factor
-            w_bar = math.ceil(width * beta / factor) * factor
-        
-        return h_bar, w_bar
+        """计算 Qwen2.5-VL 的 resize 后尺寸（委托给共享实现，带尺寸/长宽比合法性校验）"""
+        return smart_resize(height, width, factor, self.min_pixels, self.max_pixels)
 
 
 def main():
