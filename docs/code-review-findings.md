@@ -1,5 +1,9 @@
 # ScreenAgent 代码审查问题清单
 
+> **这是第一轮审查**，修完这里的 13 条之后训练跑起来了，但很快又发现了一个这轮审查
+> 没有覆盖到的、影响更大的数据标注格式问题——这条更严重的 bug 及完整排查过程见
+> [REPORT.md](./REPORT.md)。
+
 > 本清单基于对 `train.py`、`template.py`、`train_dataset.py`、`base_dataset.py`、
 > `eval_dataset.py`、`evaluator.py`、`model_utils.py`、`inference.py` 八份文件的逐一审查整理而成。
 > 文件的实际相对路径依据代码中的 import 语句推断（如 `from .template import ...`、
