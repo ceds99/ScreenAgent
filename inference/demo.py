@@ -64,6 +64,11 @@ def main():
     parser.add_argument("--instruction", type=str, required=True, help="指令，比如'点击登录按钮'")
     parser.add_argument("--output", type=str, default=None, help="结果图片保存路径")
     parser.add_argument("--device", type=str, default="cuda:0", help="设备")
+    parser.add_argument("--coord_format", type=str, default="qwen_abs",
+                        choices=["qwen_abs", "norm", "int1000"],
+                        help="模型输出的坐标格式，要和训练时一致")
+    parser.add_argument("--min_visual_tokens", type=int, default=256)
+    parser.add_argument("--max_visual_tokens", type=int, default=1280)
     args = parser.parse_args()
     
     print("=" * 60)
@@ -81,7 +86,13 @@ def main():
     
     # 加载模型
     print("加载模型...")
-    model = ScreenAgentInference(args.model, device=args.device)
+    model = ScreenAgentInference(
+        args.model,
+        device=args.device,
+        coord_format=args.coord_format,
+        min_visual_tokens=args.min_visual_tokens,
+        max_visual_tokens=args.max_visual_tokens,
+    )
     
     # 推理
     print("执行推理...")

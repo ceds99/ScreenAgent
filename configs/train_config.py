@@ -48,6 +48,10 @@ STAGE1_CONFIG = {
     "uniform_prompt": True,                      # 使用统一 prompt
     "random_sample": True,                       # 随机采样
     "record_sample": True,                       # 记录采样（轮询）
+
+    # 坐标格式：qwen_abs（缩放空间绝对像素）/ norm（0-1 浮点）/ int1000（0-1000 整数）
+    # 训练、评估、推理必须用同一个值，实现见 utils/coordinate.py
+    "coord_format": "qwen_abs",
 }
 
 # ============================================================
@@ -66,6 +70,9 @@ STAGE2_CONFIG = {
     # 学习率降低（微调阶段）
     "lr": 0.00005,
 
+    # 坐标格式必须和 Stage 1 一致，否则相当于换了一套标注继续训
+    "coord_format": "qwen_abs",
+
     # 其他参数和 Stage 1 相同
 }
 
@@ -73,8 +80,13 @@ STAGE2_CONFIG = {
 # 评估配置
 # ============================================================
 EVAL_CONFIG = {
-    "eval_only": True,                           # 只评估，不训练
-    "lora_r": 0,                                 # 评估时不用 LoRA
+    "eval_only": True,                           # 只评估，不训练（不会加载训练集）
+    "lora_r": 0,                                 # 评估时不用 LoRA（权重已合并）
     "val_dataset": "screenspot",                 # 评估数据集
     "val_json": "hf_test_full",
+
+    # 必须和训练时一致，这三个值都会影响坐标还原
+    "coord_format": "qwen_abs",
+    "min_visual_tokens": 256,
+    "max_visual_tokens": 1280,
 }

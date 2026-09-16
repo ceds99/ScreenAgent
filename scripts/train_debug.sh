@@ -23,6 +23,9 @@ echo "============================================================"
 export CUDA_VISIBLE_DEVICES=0
 NUM_GPUS=1
 
+# 和正式训练保持一致
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
 # 模型路径
 MODEL_DIR="${PROJECT_DIR}/checkpoints/base_model"
 MODEL_PATH=""
@@ -48,8 +51,13 @@ if [ ! -d "${DATASET_DIR}/train" ]; then
     exit 1
 fi
 
+# 多轮对话轮数，默认 1 最省显存。正式训练用的是 30，
+# 想顺便验证多轮那条路径就跑 NUM_TURN=30 bash scripts/train_debug.sh
+NUM_TURN="${NUM_TURN:-1}"
+
 echo ""
-echo "开始调试训练（只跑 10 个 step）..."
+echo "开始调试训练（只跑 10 个 step，num_turn=${NUM_TURN}）..."
+echo "建议再用 NUM_TURN=30 跑一次，正式训练走的是多轮，显存占用不一样"
 echo ""
 
 # 用最小配置启动
@@ -72,6 +80,8 @@ deepspeed --num_gpus=${NUM_GPUS} \
     --warmup_steps 2 \
     --lora_r 8 \
     --lora_alpha 16 \
+    --num_turn ${NUM_TURN} \
+    --coord_format "qwen_abs" \
     --min_visual_tokens 256 \
     --max_visual_tokens 512 \
     --precision "bf16" \

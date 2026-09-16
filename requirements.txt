@@ -30,11 +30,12 @@ bitsandbytes==0.43.1
 # datasets 用于加载数据集
 datasets>=2.18.0
 
-# huggingface-hub 版本需要 >= 0.21.0（transformers 4.49.0 要求）
-huggingface-hub>=0.21.0
-
-# tokenizers 版本需要 >= 0.19.0（transformers 4.49.0 要求）
-tokenizers>=0.19.0
+# tokenizers 和 huggingface-hub 故意不在这里写版本。
+# transformers 4.49.0 自己就声明了它需要的范围，pip 会据此装匹配的版本。
+# 这里再写一个宽松的下界（比如 tokenizers>=0.19.0）没有任何约束作用，
+# 只会让人误以为低版本也能用。
+tokenizers
+huggingface-hub
 
 # ========== Qwen-VL 相关 ==========
 # Qwen-VL 模型的图像处理工具
@@ -80,3 +81,20 @@ jupyterlab>=4.0.0
 
 # 自然语言处理
 nltk>=3.8.0
+
+# ============================================================
+# 装完之后如果报这个错：
+#   AttributeError: module 'decoders' has no attribute 'DecodeStream'
+#
+# 这是 tokenizers 装坏了 —— Python 文件是新版的，编译出来的 .so 是旧版的，
+# 包自己内部就不一致。pip install --upgrade 修不好，必须先把目录删干净，
+# 因为 pip uninstall 有时会留下旧的 .so：
+#
+#   SP=$(python -c "import site; print(site.getsitepackages()[0])")
+#   pip uninstall -y tokenizers
+#   rm -rf "$SP"/tokenizers*
+#   pip install --no-cache-dir "transformers==4.49.0"
+#
+# 然后验证：
+#   python -c "from tokenizers import decoders; print(decoders.DecodeStream)"
+# ============================================================

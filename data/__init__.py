@@ -6,6 +6,11 @@ from .data_utils import (
     ProgressMeter,
     Summary,
     dict_to_cuda,
+    load_metadata,
+    detect_annotation_format,
+    normalize_annotations,
+    validate_normalized_annotations,
+    prepare_annotations,
 )
 
 from .template import (
@@ -26,6 +31,11 @@ __all__ = [
     'ProgressMeter',
     'Summary',
     'dict_to_cuda',
+    'load_metadata',
+    'detect_annotation_format',
+    'normalize_annotations',
+    'validate_normalized_annotations',
+    'prepare_annotations',
     # 模板函数
     'build_grounding_prompt',
     'build_eval_prompt',

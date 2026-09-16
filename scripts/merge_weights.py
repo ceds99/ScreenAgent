@@ -5,12 +5,14 @@
 这个脚本把 LoRA 权重合并到基础模型中，生成一个完整的模型。
 
 使用方法:
-    python scripts/merge_weights.py --exp_dir logs/stage1/2025-01-30_xx-xx-xx
+    python scripts/merge_weights.py --exp_dir logs/stage1/2026-01-30_xx-xx-xx
 """
 
 import argparse
 import os
+import re
 import sys
+import glob
 import json
 
 import torch
@@ -29,7 +31,7 @@ def parse_args():
         '--exp_dir',
         type=str,
         required=True,
-        help="实验目录，比如 logs/stage1/2025-01-30_xx-xx-xx"
+        help="实验目录，比如 logs/stage1/2026-01-30_xx-xx-xx"
     )
     parser.add_argument(
         '--base_model',
@@ -37,7 +39,53 @@ def parse_args():
         default=None,
         help="基础模型路径，默认从 args.json 读取"
     )
+    parser.add_argument(
+        '--output',
+        type=str,
+        default=None,
+        help="输出目录，默认是 <exp_dir>/ckpt_model/merged_model"
+    )
+    parser.add_argument(
+        '--device',
+        type=str,
+        default="cuda:0",
+        help="加载模型用的设备，显存不够可以用 cpu"
+    )
     return parser.parse_args()
+
+
+def find_weight_file(ckpt_dir):
+    """
+    在检查点目录里找训练好的权重文件
+
+    DeepSpeed 存出来的结构是 ckpt_model/global_step<N>/mp_rank_00_model_states.pt，
+    训练跑了几个 epoch 就会留下几个 global_step 目录，要取步数最大的那个。
+
+    Args:
+        ckpt_dir: ckpt_model 目录
+
+    Returns:
+        权重文件路径，找不到返回 None
+    """
+    # 1. 普通的 pytorch_model.bin
+    direct = os.path.join(ckpt_dir, 'pytorch_model.bin')
+    if os.path.isfile(direct):
+        return direct
+
+    # 2. DeepSpeed 的 model_states 文件
+    candidates = glob.glob(
+        os.path.join(ckpt_dir, '**', '*model_states*.pt'), recursive=True
+    )
+    if not candidates:
+        return None
+
+    def sort_key(path):
+        match = re.search(r'global_step(\d+)', path)
+        step = int(match.group(1)) if match else -1
+        return (step, os.path.getmtime(path))
+
+    candidates.sort(key=sort_key)
+    return candidates[-1]
 
 
 def main():
@@ -47,6 +95,8 @@ def main():
     args_json_path = os.path.join(args.exp_dir, 'args.json')
     if not os.path.exists(args_json_path):
         print(f"[错误] 找不到 {args_json_path}")
+        print("  --exp_dir 要指向实验目录（里面有 args.json 和 ckpt_model/），")
+        print("  比如 logs/stage1/2026-01-30_20-46-53")
         sys.exit(1)
 
     with open(args_json_path, 'r') as f:
@@ -63,7 +113,8 @@ def main():
     elif train_args.get('local_weight'):
         base_model_path = train_args.get('local_weight_dir', '')
         # 查找包含 config.json 的目录
-        if os.path.isdir(base_model_path):
+        if os.path.isdir(base_model_path) and not os.path.isfile(
+                os.path.join(base_model_path, 'config.json')):
             for root, dirs, files in os.walk(base_model_path):
                 if 'config.json' in files:
                     base_model_path = root
@@ -75,26 +126,19 @@ def main():
 
     # LoRA 权重路径
     ckpt_dir = os.path.join(args.exp_dir, 'ckpt_model')
-    weight_path = os.path.join(ckpt_dir, 'pytorch_model.bin')
+    weight_path = find_weight_file(ckpt_dir)
 
-    if not os.path.exists(weight_path):
-        # DeepSpeed 保存的检查点格式可能不同，尝试其他路径
-        # 查找 mp_rank_00_model_states.pt
-        for root, dirs, files in os.walk(ckpt_dir):
-            for f in files:
-                if 'model_states' in f:
-                    weight_path = os.path.join(root, f)
-                    break
-
-    if not os.path.exists(weight_path):
-        print(f"[错误] 找不到权重文件")
-        print(f"  尝试的路径: {os.path.join(ckpt_dir, 'pytorch_model.bin')}")
+    if weight_path is None:
+        print(f"[错误] 在 {ckpt_dir} 下找不到权重文件")
+        print("  期望是 pytorch_model.bin，或 DeepSpeed 的 global_step*/*model_states*.pt")
+        if os.path.isdir(ckpt_dir):
+            print(f"  目录下实际内容: {sorted(os.listdir(ckpt_dir))}")
         sys.exit(1)
 
     print(f"权重文件: {weight_path}")
 
     # 输出路径
-    save_path = os.path.join(ckpt_dir, 'merged_model')
+    save_path = args.output or os.path.join(ckpt_dir, 'merged_model')
     print(f"输出路径: {save_path}")
     print("")
 
@@ -128,7 +172,7 @@ def main():
         torch_dtype=torch_dtype,
         low_cpu_mem_usage=True,
         attn_implementation=attn_impl,
-        device_map="cuda:0",
+        device_map=args.device,
     )
     model.config.use_cache = False
 
@@ -137,11 +181,17 @@ def main():
     lora_r = train_args.get('lora_r', 8)
     lora_alpha = train_args.get('lora_alpha', 16)
     lora_dropout = train_args.get('lora_dropout', 0.05)
+    # 排除规则要跟训练时一样，不然 target_modules 对不上，strict=False 又不报错，
+    # 最后合出来一个没学到东西的模型
+    tune_visual_encoder = train_args.get('tune_visual_encoder', False)
 
     if lora_r > 0:
-        # 找到 LoRA 目标模块
-        exclude_modules = ["visual"]
-        target_modules = find_lora_target_modules(model, exclude_keywords=exclude_modules, verbose=False)
+        exclude_modules = [] if tune_visual_encoder else ["visual"]
+        target_modules = find_lora_target_modules(
+            model, exclude_keywords=exclude_modules, verbose=False
+        )
+        print(f"  target_modules: {len(target_modules)} 个 "
+              f"(tune_visual_encoder={tune_visual_encoder})")
 
         lora_config = LoraConfig(
             r=lora_r,
@@ -161,7 +211,7 @@ def main():
     state_dict = torch.load(weight_path, map_location="cpu")
 
     # DeepSpeed 的 state_dict 可能需要处理
-    if 'module' in state_dict:
+    if isinstance(state_dict, dict) and 'module' in state_dict:
         state_dict = state_dict['module']
 
     # 移除可能的前缀
@@ -172,7 +222,31 @@ def main():
             k = k[7:]
         new_state_dict[k] = v
 
-    model.load_state_dict(new_state_dict, strict=False)
+    # 先核对一下 LoRA 权重能不能对上号。load_state_dict 用的是 strict=False，
+    # key 对不上它不报错，直接跳过，合出来的模型跟基座一模一样，这种很难查
+    model_keys = set(model.state_dict().keys())
+    ckpt_lora_keys = [k for k in new_state_dict if 'lora_' in k]
+    matched_lora_keys = [k for k in ckpt_lora_keys if k in model_keys]
+
+    print(f"  检查点里的 LoRA 权重: {len(ckpt_lora_keys)} 个")
+    print(f"  能和当前模型对上的: {len(matched_lora_keys)} 个")
+
+    if lora_r > 0 and len(matched_lora_keys) == 0:
+        print("")
+        print("[错误] 没有任何 LoRA 权重能对上，合并会得到和基座一样的模型。")
+        print("  可能原因：base_model 和训练时用的不是同一个；")
+        print("            lora_r / tune_visual_encoder 和训练时不一致。")
+        if ckpt_lora_keys:
+            print(f"  检查点里的 key 示例: {ckpt_lora_keys[:3]}")
+        model_lora_keys = [k for k in model_keys if 'lora_' in k]
+        if model_lora_keys:
+            print(f"  当前模型的 key 示例: {model_lora_keys[:3]}")
+        sys.exit(1)
+
+    load_result = model.load_state_dict(new_state_dict, strict=False)
+    unexpected = getattr(load_result, 'unexpected_keys', [])
+    if unexpected:
+        print(f"  [提示] 有 {len(unexpected)} 个权重不属于当前模型，已忽略")
 
     # 合并 LoRA 权重
     print("[5/5] 合并并保存模型...")

@@ -4,16 +4,20 @@
 支持的评估集：
 - ScreenSpot: 标准 GUI Grounding 评估集
 - ScreenSpot-v2: 改进版评估集（修复了标注问题）
+
+评估用的 coord_format 要和训练时一样，不然模型看到的坐标说明跟训练时对不上。
 """
 
 import os
-import json
+import random
+
 from PIL import Image
 
-import torch
 from torch.utils.data import Dataset
 
 from .template import build_eval_prompt
+from .data_utils import load_metadata, prepare_annotations
+from utils.coordinate import resolve_coord_format
 
 
 # 数据集目录名映射
@@ -52,15 +56,23 @@ class ScreenSpotDataset(Dataset):
         meta_dir = os.path.join(self.base_dir, "metadata")
 
         # 加载元数据
-        json_path = os.path.join(meta_dir, f"{json_file}.json")
-        with open(json_path, 'r', encoding='utf-8') as f:
-            self.data = json.load(f)
+        self.data, self.meta_path = load_metadata(meta_dir, json_file, dataset_name)
 
-        # 解析参数
+        # ScreenSpot 的 bbox 是 [x,y,宽,高] 的绝对像素，和训练集的格式不一样，
+        # 这里统一转成归一化的 [x1,y1,x2,y2]，评测判分才算得对
         args_dict = args_dict or {}
-        self.xy_int = args_dict.get('xy_int', False)
+        self.ann_format = prepare_annotations(
+            self.data, dataset_name,
+            scale=args_dict.get('ann_scale'),
+            bbox_layout=args_dict.get('ann_bbox_layout'),
+        )
 
-        print(f"[评估数据集] {dataset_name}: {len(self.data)} 条样本")
+        self.coord_format = resolve_coord_format(args_dict)
+
+        print(f"[评估数据集] {dataset_name}: {len(self.data)} 条样本 "
+              f"(标注={self.ann_format['scale']}/{self.ann_format['bbox_layout']}, "
+              f"归一化了 {self.ann_format['changed']} 个坐标, "
+              f"coord_format={self.coord_format})")
 
     def __len__(self):
         return len(self.data)
@@ -87,7 +99,7 @@ class ScreenSpotDataset(Dataset):
 
         # 构建 prompt
         img_dict = {'type': 'image', 'min_pixels': self.min_pixels, 'max_pixels': self.max_pixels}
-        messages = build_eval_prompt(task, img_dict, self.xy_int)
+        messages = build_eval_prompt(task, img_dict, self.coord_format)
 
         prompt = self.processor.tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
@@ -143,15 +155,21 @@ class TrainingEvalDataset(Dataset):
         meta_dir = os.path.join(self.base_dir, "metadata")
 
         # 加载元数据
-        json_path = os.path.join(meta_dir, f"{json_file}.json")
-        with open(json_path, 'r', encoding='utf-8') as f:
-            self.data = json.load(f)
+        self.data, self.meta_path = load_metadata(meta_dir, json_file, dataset_name)
 
-        # 解析参数
+        # 和训练集读的是同一批数据，格式也一样要统一
         args_dict = args_dict or {}
-        self.xy_int = args_dict.get('xy_int', False)
+        self.ann_format = prepare_annotations(
+            self.data, dataset_name,
+            scale=args_dict.get('ann_scale'),
+            bbox_layout=args_dict.get('ann_bbox_layout'),
+        )
 
-        print(f"[训练评估数据集] {dataset_name}: {len(self.data)} 条样本")
+        self.coord_format = resolve_coord_format(args_dict)
+
+        print(f"[训练评估数据集] {dataset_name}: {len(self.data)} 条样本 "
+              f"(标注={self.ann_format['scale']}/{self.ann_format['bbox_layout']}, "
+              f"coord_format={self.coord_format})")
 
     def __len__(self):
         return len(self.data)
@@ -161,8 +179,6 @@ class TrainingEvalDataset(Dataset):
 
     def _get_sample(self, idx):
         """获取一条样本"""
-        import random
-
         item = self.data[idx]
 
         # 加载图片
@@ -175,14 +191,14 @@ class TrainingEvalDataset(Dataset):
             image_list = None
             item['img_url_abs'] = ""
 
-        # 固定随机种子选择元素
-        random.seed(idx)
-        element_idx = random.randint(0, len(item['element']) - 1)
+        # 固定随机种子选元素，保证每次评估选到的是同一个
+        rng = random.Random(idx)
+        element_idx = rng.randint(0, len(item['element']) - 1)
         task = item['element'][element_idx]['instruction']
 
         # 构建 prompt
         img_dict = {'type': 'image', 'min_pixels': self.min_pixels, 'max_pixels': self.max_pixels}
-        messages = build_eval_prompt(task, img_dict, self.xy_int)
+        messages = build_eval_prompt(task, img_dict, self.coord_format)
 
         prompt = self.processor.tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True

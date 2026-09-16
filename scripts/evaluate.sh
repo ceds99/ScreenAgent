@@ -47,6 +47,7 @@ fi
 
 echo "模型路径: ${MODEL_PATH}"
 echo "评估数据集: ${VAL_DATASET}"
+echo "坐标格式: ${COORD_FORMAT}"
 
 # 数据集目录
 DATASET_DIR="${PROJECT_DIR}/datasets"
@@ -64,6 +65,10 @@ VAL_JSON="hf_test_full"
 MIN_VISUAL_TOKENS=256
 MAX_VISUAL_TOKENS=1280
 PRECISION="bf16"
+
+# 坐标格式，要和训练时的 --coord_format 一样，不一样准确率会掉到接近随机
+# 不确定训练时用的什么，查 logs/<exp_id>/<时间戳>/args.json
+COORD_FORMAT="${COORD_FORMAT:-qwen_abs}"
 
 echo ""
 echo "[检查] GPU..."
@@ -83,6 +88,7 @@ deepspeed --num_gpus=${NUM_GPUS} \
     --dataset_dir "${DATASET_DIR}" \
     --val_dataset "${VAL_DATASET}" \
     --val_json "${VAL_JSON}" \
+    --coord_format "${COORD_FORMAT}" \
     --min_visual_tokens ${MIN_VISUAL_TOKENS} \
     --max_visual_tokens ${MAX_VISUAL_TOKENS} \
     --precision "${PRECISION}" \

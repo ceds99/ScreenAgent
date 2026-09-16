@@ -23,15 +23,26 @@ def collate_fn(batch, processor=None):
     DataLoader 的 collate 函数
 
     把多个样本组合成一个 batch，主要处理：
-    - padding：把不同长度的序列 pad 到相同长度
+    - padding：把不同长度的序列 pad 到相同长度，同时生成 attention_mask
     - 拼接 pixel_values 和 image_sizes
+
+    Qwen2.5-VL 的 pixel_values 是 [num_patches, hidden_dim] 的二维张量，每个样本的
+    num_patches 都不一样，要沿 patch 维拼成 [sum_patches, hidden_dim]，模型内部再按
+    image_grid_thw 切回去，用 stack 形状对不上。
+
+    attention_mask 不能省，除了屏蔽 padding，Qwen2.5-VL 算多模态 RoPE 的位置索引
+    （get_rope_index）也要用它。
+
+    这里是右 padding，训练没问题；批量 generate 要的是左 padding，所以评估的
+    DataLoader 保持 batch_size=1，见 trainer/train.py 里建 val_loader 的地方。
 
     Args:
         batch: 样本列表，每个元素是 (data_dict, metadata)
         processor: tokenizer/processor
 
     Returns:
-        batch 字典
+        batch 字典，含 input_ids / labels / attention_mask /
+        pixel_values / image_sizes / meta_data
     """
     # 分离数据和元数据
     data_list = [x[0] for x in batch]
@@ -41,8 +52,17 @@ def collate_fn(batch, processor=None):
     input_ids = [item['input_ids'] for item in data_list]
     labels = [item['labels'] for item in data_list]
 
-    # Padding
+    # 最大长度，padding 和截断都以它为准
+    max_len = processor.tokenizer.model_max_length
+
+    # 记录每条样本的真实长度（截断之后），下面构造 attention_mask 要用
+    real_lengths = [min(int(x.shape[0]), max_len) for x in input_ids]
+
+    # pad_token_id 有可能是 None，退回 eos
     pad_token_id = processor.tokenizer.pad_token_id
+    if pad_token_id is None:
+        pad_token_id = processor.tokenizer.eos_token_id
+
     input_ids = torch.nn.utils.rnn.pad_sequence(
         input_ids, batch_first=True, padding_value=pad_token_id
     )
@@ -51,33 +71,29 @@ def collate_fn(batch, processor=None):
     )
 
     # 截断到最大长度
-    max_len = processor.tokenizer.model_max_length
     input_ids = input_ids[:, :max_len]
     labels = labels[:, :max_len]
 
-    # 重新生成 attention_mask：add_answer_to_batch/add_multiturn_answer 拼接答案后
-    # 删除了原有的 attention_mask（长度和拼接后的 input_ids 对不上），这里基于
-    # padding 后的 input_ids 重新生成，padding 位置标记为 0
-    attention_mask = (input_ids != pad_token_id).long()
+    # attention_mask 按真实长度置 1。这里不能用 input_ids != pad_token_id 去判断，
+    # 正文里也可能出现同一个 token id
+    attention_mask = torch.zeros_like(input_ids, dtype=torch.long)
+    for i, length in enumerate(real_lengths):
+        attention_mask[i, :length] = 1
 
     # 处理图像数据
-    # Qwen2.5-VL 的 pixel_values 本身就是按 patch 拼接的 2D tensor [num_patches, hidden_dim]，
-    # 不带独立的 batch 维；统一用 cat 拼接多个样本的 patch，配合 image_grid_thw
-    # 供模型区分各张图各自的 patch 范围。batch_size=1 时行为不变，
-    # batch_size>1 且样本分辨率不同也能正确拼接（不会像 stack 那样因形状不一致而报错）。
     if data_list[0]['pixel_values'] is not None:
-        pixel_values = [item['pixel_values'] for item in data_list]
-        pixel_values = torch.cat(pixel_values, dim=0)
-        image_sizes = [item['image_sizes'] for item in data_list]
-        image_sizes = torch.cat(image_sizes, dim=0)
+        # 沿第 0 维拼，2D 是 patch 维，4D 是 batch 维
+        pixel_values = torch.cat([item['pixel_values'] for item in data_list], dim=0)
+        # image_grid_thw 每条是 [1, 3]，拼成 [B, 3]
+        image_sizes = torch.cat([item['image_sizes'] for item in data_list], dim=0)
     else:
         pixel_values = None
         image_sizes = None
 
     result = {
         'input_ids': input_ids,
-        'attention_mask': attention_mask,
         'labels': labels,
+        'attention_mask': attention_mask,
         'pixel_values': pixel_values,
         'image_sizes': image_sizes,
         'meta_data': meta_list,

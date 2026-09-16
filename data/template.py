@@ -12,6 +12,7 @@ import random
 import torch
 
 from .data_utils import IGNORE_INDEX
+from utils.coordinate import DEFAULT_COORD_FORMAT
 
 
 # ============================================================
@@ -60,7 +61,8 @@ SCREENSPOT_SYSTEM = "Based on the screenshot of the page, I give a text descript
 # ============================================================
 
 def build_grounding_prompt(element_name, image_dict, sample_type=0,
-                           shuffle_prompt=True, xy_int=False, uniform_prompt=False):
+                           shuffle_prompt=True, coord_format=DEFAULT_COORD_FORMAT,
+                           uniform_prompt=False):
     """
     构建 grounding 任务的 prompt
 
@@ -75,7 +77,8 @@ def build_grounding_prompt(element_name, image_dict, sample_type=0,
             2 - point2text: 给坐标，预测文字
             3 - bbox2text: 给边界框，预测文字
         shuffle_prompt: 是否随机打乱图片和文字的顺序
-        xy_int: 坐标是否使用整数（0-1000）
+        coord_format: 坐标格式（qwen_abs / norm / int1000），决定提示词里
+                      怎么描述坐标，要和训练答案的格式对上
         uniform_prompt: 是否使用统一的 prompt（评估时用）
 
     Returns:
@@ -95,8 +98,8 @@ def build_grounding_prompt(element_name, image_dict, sample_type=0,
 
     # 添加坐标格式说明
     if sample_type in [0, 2]:
-        # 点坐标
-        coord_desc = COORD_POINT_INT_DESC if xy_int else COORD_POINT_DESC
+        # 点坐标：只有 int1000 需要特别说明「缩放到 1-1000」
+        coord_desc = COORD_POINT_INT_DESC if coord_format == "int1000" else COORD_POINT_DESC
     else:
         # 边界框坐标
         coord_desc = COORD_BBOX_DESC
@@ -125,16 +128,17 @@ def build_grounding_prompt(element_name, image_dict, sample_type=0,
     return [{"role": "user", "content": user_content}]
 
 
-def build_eval_prompt(element_name, image_dict, xy_int=False):
+def build_eval_prompt(element_name, image_dict, coord_format=DEFAULT_COORD_FORMAT):
     """
     构建评估时的 prompt
 
     评估时使用统一的格式，方便比较不同模型的性能。
+    坐标说明要和训练时 build_grounding_prompt 给的对上。
 
     Args:
         element_name: 要定位的元素描述
         image_dict: 图像配置字典
-        xy_int: 坐标是否使用整数
+        coord_format: 坐标格式（qwen_abs / norm / int1000）
 
     Returns:
         构建好的消息列表
@@ -142,7 +146,7 @@ def build_eval_prompt(element_name, image_dict, xy_int=False):
     user_content = []
 
     # 使用固定的系统提示词
-    if xy_int:
+    if coord_format == "int1000":
         system_prompt = SCREENSPOT_SYSTEM + ' ' + COORD_POINT_INT_DESC
     else:
         system_prompt = SCREENSPOT_SYSTEM + ' ' + COORD_POINT_DESC

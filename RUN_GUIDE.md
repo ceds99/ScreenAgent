@@ -37,27 +37,34 @@ ScreenAgent/
 │
 ├── inference/                  # 推理模块
 │   ├── __init__.py
-│   ├── inference.py           # 推理脚本
-│   └── demo.ipynb             # 演示Notebook
+│   ├── inference.py           # 推理脚本（ScreenAgentInference）
+│   └── demo.py                # 可视化演示脚本
 │
 ├── utils/                      # 工具函数
 │   ├── __init__.py
-│   └── common.py              # JSON保存、日志目录等通用工具
+│   ├── common.py              # JSON保存、日志目录等通用工具
+│   └── coordinate.py          # 坐标转换（训练/评估/推理共用的唯一实现）
 │
 ├── datasets/                   # 数据集存放目录
 │   ├── train/                 # 训练数据
 │   └── eval/                  # 评估数据
 │
-├── checkpoints/               # 模型检查点
-│   ├── base_model/           # 基础模型 Qwen2.5-VL-3B
-│   ├── stage1/               # Stage1 训练结果
-│   └── stage2/               # Stage2 训练结果（最终模型）
+├── checkpoints/               # 基础模型存放目录
+│   └── base_model/           # 基础模型 Qwen2.5-VL-3B（download_model.sh 下载到这里）
 │
-├── logs/                      # 训练日志
+├── logs/                      # 训练日志 + 训练产物
+│   └── <exp_id>/<时间戳>/
+│       ├── args.json          # 本次训练用的全部参数
+│       ├── ckpt_model/        # 检查点，合并后的模型也在这下面
+│       ├── tensorboard/
+│       └── tmp/               # 评估明细和可视化结果
+│
 ├── requirements.txt           # Python依赖
 ├── RUN_GUIDE.md              # 运行指南
 └── README.md                 # 项目说明
 ```
+
+> 注意：训练产物统一落在 `logs/<exp_id>/<时间戳>/` 下，`checkpoints/` 只用来放下载的基座模型。
 
 ---
 
@@ -261,6 +268,23 @@ ls -lh datasets/eval/
 - **Stage1**：跨平台预训练，使用 3 个数据集混合训练（showui-desktop, showui-web, amex）
 - **Stage2**：专项训练，只使用 uground 数据集
 
+### 3.0 关键参数：坐标格式 `--coord_format`
+
+训练答案用哪种坐标空间，由 `--coord_format` 统一决定，**训练、评估、推理必须用同一个值**，否则定位结果会整体偏移。
+
+| 取值 | 答案形如 | 含义 |
+|------|---------|------|
+| `qwen_abs`（默认） | `[699, 113]` | Qwen2.5-VL 缩放后图像上的绝对像素坐标 |
+| `norm` | `[0.52, 0.15]` | 归一化坐标，0-1 浮点 |
+| `int1000` | `[520, 150]` | 归一化坐标 × 1000 的整数 |
+
+实现集中在 `utils/coordinate.py`，训练时的 `encode_point` 和评估/推理时的 `decode_point` 是严格对偶的一对。
+
+- 不传这个参数就是 `qwen_abs`，现有训练脚本无需改动。
+- 参数 `--xy_int` 仍然可用，等价于 `--coord_format int1000`。
+- 评估时脚本会从 `args.json` 之外单独传参，所以 **`scripts/evaluate.sh` 的 `--coord_format` 要和训练时保持一致**（默认都是 `qwen_abs`）。
+- 用 `inference.py` / `demo.py` 推理时同样有 `--coord_format` 参数。
+
 ### 3.1 快速验证（调试模式）
 
 在正式训练前，先跑一下调试脚本，确保代码没问题：
@@ -355,11 +379,23 @@ A: 减小 `grad_accumulation_steps`（比如从 48 改成 24）
 
 **Q2: 评估准确率很低**
 
-A: 检查 `num_turn` 是否设置为 30，这是关键参数！
+A: 按这个顺序排查：
+
+1. **`--coord_format` 训练和评估是否一致**。这是最常见也最致命的原因——训练时输出的是缩放空间像素，评估时却按归一化去还原（或者反过来），预测点会整体挤到图像一角，准确率接近随机。
+2. `--min_visual_tokens` / `--max_visual_tokens` 是否和训练时一致。这两个值会改变 `smart_resize` 的结果，进而改变坐标换算。
+3. `num_turn` 是否设置为 30。这个影响的是数据利用率和收敛速度，不会让准确率掉到随机水平。
+4. 权重是否正确合并——跑 `merge_weights.py` 时留意 "能和当前模型对上的: N 个" 这行，N 为 0 说明合并出来的模型等同于基座。
+
+排查时可以看 `logs/<exp_id>/<时间戳>/tmp/eval_details_epoch*.json`，里面有每条样本的模型原始输出（`raw_output`）和还原后的坐标（`pred_point`），一眼就能看出是解析问题还是坐标空间问题。
 
 **Q3: 训练很慢**
 
 A: `grad_accumulation_steps=48` 是正常设置，每 48 个 batch 才更新一次参数。
+
+**Q4: 能不能把 batch_size 开大？**
+
+A: 训练可以。`collate_fn` 会生成 `attention_mask` 并把 `pixel_values` 按 patch 维拼接，`batch_size > 1` 是正确的（显存够就行）。
+但**评估的 DataLoader 固定 `batch_size=1`**：collate 用的是右 padding，而 decoder-only 模型批量 `generate()` 需要左 padding，放大 batch 会让生成结果错位。
 
 ### 3.7 自定义训练参数
 
@@ -430,46 +466,3 @@ bash scripts/evaluate.sh logs/stage2/时间戳/ckpt_model/merged_model screenspo
 | web/icon Accuracy | 网页端图标定位准确率 |
 | web/text Accuracy | 网页端文字定位准确率 |
 | Avg Accuracy | 平均准确率 |
-
----
-
-## 五、模型推理
-
-训练好的模型可以用来对任意截图进行 GUI 元素定位。
-
-### 5.1 Python API
-
-```python
-from inference import ScreenAgentInference
-
-# 加载模型
-model = ScreenAgentInference("logs/stage2/时间戳/ckpt_model/merged_model")
-
-# 预测点击坐标
-x, y = model.predict("screenshot.png", "点击登录按钮")
-print(f"预测坐标: ({x}, {y})")
-```
-
-### 5.2 命令行推理
-
-```bash
-cd /path/to/ScreenAgent
-
-python inference/inference.py \
-    --model logs/stage2/时间戳/ckpt_model/merged_model \
-    --image screenshot.png \
-    --instruction "点击登录按钮"
-```
-
-### 5.3 可视化演示
-
-```bash
-# 会在图片上画出预测的点击位置，并保存为 xxx_result.png
-python inference/demo.py \
-    --model logs/stage2/时间戳/ckpt_model/merged_model \
-    --image screenshot.png \
-    --instruction "点击登录按钮"
-```
-
----
-

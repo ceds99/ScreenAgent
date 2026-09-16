@@ -1,32 +1,44 @@
-# macOS
-.DS_Store
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# 虚拟环境
+venv/
+.venv/
+env/
 
 # IDE
 .idea/
+.vscode/
+*.swp
+*.swo
 
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.egg-info/
+# Jupyter
 .ipynb_checkpoints/
 
-# Env
-.env
-venv/
-.venv/
+# 日志和临时文件
+logs/
+*.log
+tmp/
+temp/
 
-# Large / generated artifacts — downloaded or produced on the server, not versioned
-checkpoints/*
-!checkpoints/.gitkeep
-datasets/*
-!datasets/.gitkeep
-logs/*
-!logs/.gitkeep
+# 模型和数据（太大不上传）
+checkpoints/base_model/
+checkpoints/stage1/
+checkpoints/stage2/
+datasets/train/
+datasets/eval/
 
-# Common weight/data file types, in case they land outside the dirs above
-*.pt
-*.pth
-*.bin
-*.safetensors
-*.ckpt
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# wandb
+wandb/

@@ -74,16 +74,19 @@ def train_one_epoch(train_loader, model, epoch, scheduler, writer, train_iter, a
                     input_dict["pixel_values"] = input_dict["pixel_values"].float()
 
             # 构建前向传播参数
+            # 别开 output_hidden_states，每层的隐藏状态都留在显存里，用不上还占地方
             forward_dict = {
                 "pixel_values": input_dict["pixel_values"],
                 "input_ids": input_dict["input_ids"],
-                "attention_mask": input_dict["attention_mask"],
                 "labels": input_dict["labels"],
-                "output_hidden_states": True,
             }
 
+            # attention_mask 要传，Qwen2.5-VL 算 RoPE 位置索引也用它，batch > 1 时不传就错了
+            if input_dict.get("attention_mask") is not None:
+                forward_dict["attention_mask"] = input_dict["attention_mask"]
+
             # 添加图像尺寸信息
-            if "image_sizes" in input_dict:
+            if input_dict.get("image_sizes") is not None:
                 forward_dict["image_grid_thw"] = input_dict["image_sizes"]
 
             # 前向传播
